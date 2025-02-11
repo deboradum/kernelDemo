@@ -3,67 +3,47 @@ import torch.nn as nn
 
 
 class CNNEncoder(nn.Module):
-    def __init__(self, num_input_channels: int = 1, num_filters: int = 32,
-                 z_dim: int = 20):
-        """Encoder with a CNN network
-        Inputs:
-            num_input_channels - Number of input channels of the image. For
-                                 MNIST, this parameter is 1
-            num_filters - Number of channels we use in the first convolutional
-                          layers. Deeper layers might use a duplicate of it.
-            z_dim - Dimensionality of latent representation z
+    def __init__(self, num_input_channels: int = 1, num_filters: int = 32, z_dim: int = 20):
+        """
+        num_input_channels - Number of input channels of the image.
+        num_filters - Number of channels we use in the first convolutional layers.
+        z_dim - Dimensionality of latent representation z
         """
         super().__init__()
 
         c_hid = num_filters
         self.net = nn.Sequential(
             nn.Conv2d(
-                num_input_channels, c_hid, kernel_size=3, padding=1, stride=2
-            ),  # 32x32 => 16x16
+            num_input_channels, c_hid, kernel_size=3, padding=1, stride=2), # 32x32 => 16x16
             nn.GELU(),
             nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.Conv2d(
-                c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2
-            ),  # 16x16 => 8x8
+            nn.Conv2d(c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2), # 16x16 => 8x8
             nn.GELU(),
             nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.Conv2d(
-                2 * c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2
-            ),  # 8x8 => 4x4
+            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2), # 8x8 => 4x4
             nn.GELU(),
-            nn.Flatten(),  # Image grid to single feature vector
-            nn.Linear(2 * 16 * c_hid, z_dim),
+            nn.Flatten(), # Image grid to single feature vector
+            nn.Linear(2 * 16 * c_hid, z_dim)
         )
         self.proj_mean = nn.Linear(z_dim, z_dim)
         self.proj_log_std = nn.Linear(z_dim, z_dim)
 
     def forward(self, x):
         """
-        Inputs:
-            x - Input batch with images of shape [B,C,H,W] of type long with values between 0 and 15.
-        Outputs:
-            mean - Tensor of shape [B,z_dim] representing the predicted mean of the latent distributions.
-            log_std - Tensor of shape [B,z_dim] representing the predicted log standard deviation
-                      of the latent distributions.
+        x - Input batch with images of shape [B,C,H,W]
         """
-        x = x.float() / 15 * 2.0 - 1.0  # Move images between -1 and 1
         z = self.net(x)
         return z
 
 
 class CNNDecoder(nn.Module):
-    def __init__(
-        self, num_input_channels: int = 16, num_filters: int = 32, z_dim: int = 20
-    ):
-        """Decoder with a CNN network.
-        Inputs:
-            num_input_channels - Number of channels of the image to
-                                 reconstruct.
-            num_filters - Number of filters we use in the last convolutional
-                          layers. Early layers might use a duplicate of it.
-            z_dim - Dimensionality of latent representation z
+    def __init__(self, num_input_channels: int = 16, num_filters: int = 32, z_dim: int = 20):
+        """
+        num_input_channels - Number of channels of the image to reconstruct.
+        num_filters - Number of filters we use in the last convolutional layers.
+        z_dim - Dimensionality of latent representation z
         """
         super().__init__()
 
@@ -72,55 +52,25 @@ class CNNDecoder(nn.Module):
         self.linear = nn.Sequential(nn.Linear(z_dim, 2 * 16 * c_hid), nn.GELU())
 
         self.net = nn.Sequential(
-            nn.ConvTranspose2d(
-                2 * c_hid,
-                2 * c_hid,
-                kernel_size=3,
-                output_padding=1,
-                padding=1,
-                stride=2,
-            ),  # 4x4 => 8x8
+            nn.ConvTranspose2d(2 * c_hid, 2 * c_hid, kernel_size=3, output_padding=1, padding=1, stride=2), # 4x4 => 8x8
             nn.GELU(),
             nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.ConvTranspose2d(
-                2 * c_hid, c_hid, kernel_size=3, output_padding=1, padding=1, stride=2
-            ),  # 8x8 => 16x16
+            nn.ConvTranspose2d(2 * c_hid, c_hid, kernel_size=3, output_padding=1, padding=1, stride=2), # 8x8 => 16x16
             nn.GELU(),
             nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.ConvTranspose2d(
-                c_hid,
-                num_input_channels,
-                kernel_size=3,
-                output_padding=1,
-                padding=1,
-                stride=2,
-            ),  # 16x16 => 32x32
+            nn.ConvTranspose2d(c_hid, num_input_channels, kernel_size=3, output_padding=1, padding=1, stride=2), # 16x16 => 32x32
         )
 
     def forward(self, z):
         """
-        Inputs:
-            z - Latent vector of shape [B,z_dim]
-        Outputs:
-            x - Prediction of the reconstructed image based on z.
-                This should be a logit output *without* a softmax applied on it.
-                Shape: [B,num_input_channels,32,32]
+        z - Latent vector of shape [B,z_dim]
         """
-        z = z.to(self.device)
         x = self.linear(z)
         x = x.reshape(x.shape[0], -1, 4, 4)
         x = self.net(x)
         return x
-
-    @property
-    def device(self):
-        """
-        Property function to get the device on which the decoder is.
-        Might be helpful in other functions.
-        """
-        return next(self.parameters()).device
 
 
 if __name__ == "__main__":
