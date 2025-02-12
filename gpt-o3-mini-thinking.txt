@@ -1,0 +1,152 @@
+The user needs the decoder to output a BxCx28x28 tensor instead of BxCx32x32, with the restriction that only the __init__ method of the CNNDecoder class can be modified, not the forward method.
+
+To adjust the output size, I’ll focus on the layers inside the __init__ method and alter the dimensions there without touching the forward method. This might involve changing kernel sizes, strides, or padding to reduce the output dimension accordingly. I’ll start by considering those options to shrink the spatial dimensions.
+
+The original CNNDecoder outputs a BxCx32x32 tensor, but the user wants it modified to BxCx28x28. In the __init__, the network currently reshapes to [B, 64, 4, 4]. After that, there’s a series of layers (ConvTranspose2d) that gradually upsample the size, with the first convtranspose layer bringing 4x4 to 8x8.
+
+To make the output 28x28, one approach could be adjusting kernel sizes, strides, or padding in the transposed convolution layers to correctly match the target size. I'll need to carefully tweak those parameters.
+
+The current decoder takes the input from 4x4 and upscales it step by step to 32x32, but we need to adjust it to output 28x28.
+
+Option 1: I could modify the last ConvTranspose2d layer to make its output 28 instead of 32 by adjusting kernel size, stride, padding, or output padding.
+
+Using the formula for output size, I’ll test adjustments like changing stride or padding in the final layer. But if that doesn’t work, I might need to add another layer, though only the __init__ method is allowed to change. I’ll keep these options in mind!
+
+After reviewing options, adjusting the final ConvTranspose2d layer in the decoder seems the most straightforward approach. By setting padding to 3 and leaving kernel_size, stride, and output_padding unchanged, the output will become 28x28 from 16x16:
+
+Formula: (16-1)2 - 23 + 3 + 1 = 28.
+
+This method appears to work without causing issues at the transition layers. I’ll modify the __init__ method to update the padding of the final convolution layer to 3, ensuring compatibility with the rest of the network.
+
+One acceptable solution is to change the parameters of the last transposed convolution so that it outputs 28×28 instead of 32×32. Recall that for a transposed convolution the output size is given by
+out=(in−1)×stride−2×padding+kernel_size+output_padding.
+out=(in−1)×stride−2×padding+kernel_size+output_padding.
+
+In the original code, the last layer is defined as
+
+nn.ConvTranspose2d(c_hid, num_input_channels, kernel_size=3, output_padding=1, padding=1, stride=2)
+
+For an input of size 16 (from the previous layer), its output size is
+(16−1)×2−2×1+3+1=15×2−2+3+1=30−2+4=32.
+(16−1)×2−2×1+3+1=15×2−2+3+1=30−2+4=32.
+
+To get an output of size 28, we want
+(16−1)×2−2×new_padding+3+1=28.
+(16−1)×2−2×new_padding+3+1=28.
+
+That simplifies to
+30−2×new_padding+4=28⟹34−2×new_padding=28,
+30−2×new_padding+4=28⟹34−2×new_padding=28,
+2×new_padding=34−28=6⟹new_padding=3.
+2×new_padding=34−28=6⟹new_padding=3.
+
+Thus, changing the final layer’s padding from 1 to 3 will yield the desired 28×28 output.
+
+Below is the full modified code (note that we are only allowed to change the __init__ method of CNNDecoder):
+
+import torch
+import torch.nn as nn
+
+class CNNEncoder(nn.Module):
+    def __init__(self, num_input_channels: int = 1, num_filters: int = 32, z_dim: int = 20):
+        """
+        num_input_channels - Number of input channels of the image.
+        num_filters - Number of channels we use in the first convolutional layers.
+        z_dim - Dimensionality of latent representation z
+        """
+        super().__init__()
+
+        c_hid = num_filters
+        self.net = nn.Sequential(
+            nn.Conv2d(num_input_channels, c_hid, kernel_size=3, padding=1, stride=2), # 32x32 => 16x16
+            nn.GELU(),
+            nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2), # 16x16 => 8x8
+            nn.GELU(),
+            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2), # 8x8 => 4x4
+            nn.GELU(),
+            nn.Flatten(), # Image grid to single feature vector
+            nn.Linear(2 * 16 * c_hid, z_dim)
+        )
+        self.proj_mean = nn.Linear(z_dim, z_dim)
+        self.proj_log_std = nn.Linear(z_dim, z_dim)
+
+    def forward(self, x):
+        """
+        x - Input batch with images of shape [B,C,H,W]
+        """
+        z = self.net(x)
+        return z
+
+
+class CNNDecoder(nn.Module):
+    def __init__(self, num_input_channels: int = 16, num_filters: int = 32, z_dim: int = 20):
+        """
+        num_input_channels - Number of channels of the image to reconstruct.
+        num_filters - Number of filters we use in the last convolutional layers.
+        z_dim - Dimensionality of latent representation z
+        """
+        super().__init__()
+
+        self.num_input_channels = num_input_channels
+        c_hid = num_filters
+
+        # Map latent vector to a feature map of shape (B, 2 * c_hid, 4, 4)
+        self.linear = nn.Sequential(
+            nn.Linear(z_dim, 2 * 16 * c_hid),
+            nn.GELU()
+        )
+
+        self.net = nn.Sequential(
+            # 4x4 -> 8x8
+            nn.ConvTranspose2d(2 * c_hid, 2 * c_hid, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.GELU(),
+            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
+            nn.GELU(),
+            # 8x8 -> 16x16
+            nn.ConvTranspose2d(2 * c_hid, c_hid, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.GELU(),
+            nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=1),
+            nn.GELU(),
+            # 16x16 -> 28x28 (adjusted here by changing padding from 1 to 3)
+            nn.ConvTranspose2d(c_hid, num_input_channels, kernel_size=3, stride=2, padding=3, output_padding=1),
+        )
+
+    def forward(self, z):
+        """
+        z - Latent vector of shape [B,z_dim]
+        """
+        x = self.linear(z)
+        x = x.reshape(x.shape[0], -1, 4, 4)
+        x = self.net(x)
+        return x
+
+
+if __name__ == "__main__":
+    batch_size = 16
+    num_channels = 3
+    w = h = 32
+
+    num_filters = 32
+    z_dim = 20
+    enc = CNNEncoder(num_channels, num_filters, z_dim)
+    dec = CNNDecoder(num_channels, num_filters, z_dim)
+
+    x = torch.rand((batch_size, num_channels, h, w))
+    z = enc(x)
+    y = dec(z)
+
+    print(y.shape)  # Expected output: torch.Size([16, 3, 28, 28])
+    assert y.shape == (batch_size, num_channels, 28, 28)
+
+Explanation
+
+    Linear Layer: Unchanged. It projects the latent vector zz into a feature map of shape [B,2×chid,4,4][B,2×chid​,4,4].
+    First Transposed Convolution: Upsamples from 4×4 to 8×8.
+    Second Transposed Convolution: Upsamples from 8×8 to 16×16.
+    Final Transposed Convolution: Originally upsampled from 16×16 to 32×32. By changing padding=1 to padding=3 (with the same kernel_size=3, stride=2, and output_padding=1), the output size is adjusted to 28×28.
+
+This solution meets the requirement by only modifying the __init__ method of CNNDecoder.
